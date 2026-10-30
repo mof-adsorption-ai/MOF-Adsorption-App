@@ -1,6 +1,6 @@
 # Python 3.10.20
 
-torch==2.7.0          # CGCNN 추론
+torch==2.7.0         # CGCNN 추론
 numpy==2.2.6         # 수치 계산
 pandas==2.3.3        # DB·결과 처리
 pymatgen==2025.10.7  # CIF·결정구조 처리
