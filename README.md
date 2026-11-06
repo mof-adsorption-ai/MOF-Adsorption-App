@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 1 | `main.py`, `app/`, `requirements.txt` | 프로그램 총괄 및 기능 통합 | 문충만 |
 | 2 | `utils/cif_vis.py` | MOF 결정구조 시각화 | 김지현 |
-| 3 | `utils/preprocessing.py` | CGCNN 입력 데이터 생성 | 정명수 |
+| 3 | `utils/preprocessing.py` | MOF 결정구조의 그래프 변환 | 정명수 |
 | 4 | `utils/model.py` | CGCNN 모델을 이용한 흡착량 예측 | 이승호 |
 | 5 | `utils/plotting.py` | 흡착성능 및 MOF DB 시각화 | 최종민 |
 | 6 | `utils/db_search.py` | MOF DB 검색 및 정렬 | 이용호 |
@@ -17,12 +17,12 @@
 | 담당 | 세부 구현 내용 |
 |---|---|
 | **1. 프로그램 총괄** | 웹 UI 개발, 사용자 입력 처리, 모듈 연결 및 통합 테스트 |
-| **2. 결정구조 시각화** | MOF 결정구조 3D 시각화, 이미지 생성 및 저장 |
-| **3. CGCNN 입력 데이터 생성** | 원자 특징 생성, 이웃 원자 탐색, 거리 정보 변환 및 그래프 데이터 구성 |
-| **4. 흡착량 예측** | CGCNN 체크포인트 로딩, 압력 정규화, CO₂/N₂ 흡착량 추론 및 역정규화 |
-| **5. 흡착성능 시각화** | 압력별 CO₂/N₂ 흡착량 그래프 및 기존 MOF DB 비교 그래프 생성 |
-| **6. MOF DB 검색** | 검색 조건별 필터링 및 정렬, CO₂/N₂ 흡착량 비율 계산 |
-| **7. 결과 저장** | 예측 데이터 CSV 저장, 결정구조 및 흡착량 그래프를 포함한 PDF 보고서 생성 |
+| **2. 결정구조 시각화** | MOF 결정구조 3D 시각화 및 이미지 저장 |
+| **3. 그래프 변환** | MOF 결정구조를 CGCNN 입력 그래프로 변환 |
+| **4. 흡착량 예측** | 모델 로딩, 압력 정규화, CO₂/N₂ 흡착량 예측 및 역정규화 |
+| **5. 흡착성능 시각화** | 압력별 흡착량 및 MOF DB 비교 그래프 생성 |
+| **6. MOF DB 검색** | 조건별 검색·정렬 및 CO₂/N₂ 흡착량 비율 계산 |
+| **7. 결과 저장** | 예측 결과 CSV 저장 및 PDF 보고서 생성 |
 
 ## 2. 폴더 구조
 
@@ -58,10 +58,10 @@ MOF-project/
 | 모듈 | 함수 | 입력 | 반환 |
 |---|---|---|---|
 | `main.py` | `main()` | 웹 UI 사용자 입력 | `None` |
-| `cif_input.py` | `load_cif(cif_path)` | CIF 파일 경로 | 결정구조 `Structure` |
+| `cif_input.py` | `load_cif(cif_path)` | CIF 파일 경로 | `Structure` |
 | `cif_vis.py` | `visualize_structure(structure, output_path)` | `Structure`, 저장 경로 | 이미지 경로 `str` |
 | `preprocessing.py` | `prepare_model_input(structure, checkpoint_path)` | `Structure`, 체크포인트 경로 | CGCNN 입력 데이터 `dict` |
-| `model.py` | `predict_adsorption(graph_data, mof_id, pressures, gases, checkpoint_path)` | CGCNN 입력 데이터, MOF ID, 압력·기체 목록, 체크포인트 경로 | 예측 결과 `DataFrame` |
+| `model.py` | `predict_adsorption(graph_data, mof_id, pressures, gases, checkpoint_path)` | 그래프 데이터, MOF ID, 압력·기체 목록, 체크포인트 경로 | 예측 결과 `DataFrame` |
 | `plotting.py` | `plot_adsorption(results, output_path, db_results=None)` | 예측 결과, 저장 경로, DB 결과 | 이미지 경로 `str` |
 | `db_search.py` | `search_database(db_path, filters, sort_by=None, ascending=True, calculate_selectivity=False)` | DB 경로, 검색·정렬 조건 | 검색 결과 `DataFrame` |
 | `report.py` | `create_report(results, images, graph_info, output_path, db_results=None)` | 예측 결과, 이미지 목록, 구조 정보, 저장 경로, DB 결과 | PDF·CSV 경로 `dict` |
@@ -72,12 +72,12 @@ MOF-project/
 |---|---|---|
 | **공통** | CIF 파일 경로 | 결정구조 `Structure` |
 | **1** | 사용자 입력 및 각 모듈의 실행 결과 | 웹 UI 표시 |
-| **2** | MOF 결정구조 `Structure` | 구조 이미지 경로 |
-| **3** | MOF 결정구조 `Structure`, 체크포인트 | CGCNN 입력 그래프 데이터 |
-| **4** | CGCNN 입력 데이터, 압력, 기체 | CO₂/N₂ 흡착량 예측 결과 |
+| **2** | MOF 결정구조 | 구조 이미지 경로 |
+| **3** | MOF 결정구조, 체크포인트 | CGCNN 입력 그래프 |
+| **4** | CGCNN 입력 그래프, 압력, 기체 | CO₂/N₂ 흡착량 예측 결과 |
 | **5** | 예측 결과 및 MOF DB 데이터 | 흡착량 그래프 이미지 경로 |
-| **6** | MOF DB 및 검색 조건 | 검색·정렬된 `DataFrame` |
-| **7** | 예측 결과, 구조 정보, 생성된 이미지 및 DB 결과 | PDF·CSV 파일 경로 |
+| **6** | MOF DB 및 검색 조건 | 검색·정렬 결과 `DataFrame` |
+| **7** | 예측 결과, 구조 정보, 이미지 및 DB 결과 | PDF·CSV 파일 경로 |
 
 ### 모듈 연결 순서
 
@@ -87,7 +87,7 @@ MOF-project/
               ┌───────────────┼───────────────┐
               │               │               │
               ▼               ▼               ▼
-       2. 결정구조 시각화   3. CGCNN 입력 생성   6. MOF DB 검색
+       2. 결정구조 시각화   3. 그래프 변환      6. MOF DB 검색
               │               │               │
               │               ▼               │
               │          4. 흡착량 예측         │
@@ -100,12 +100,6 @@ MOF-project/
                               ▼
                     7. 결과 저장 및 보고서 생성
 ```
-
-- **1번:** 전체 모듈 연결 및 실행 관리
-- **2번:** 결정구조 시각화
-- **3 → 4 → 5번:** CGCNN 입력 생성 → 흡착량 예측 → 결과 시각화
-- **6번:** MOF DB 검색 및 정렬
-- **7번:** 2~6번의 결과를 전달받아 저장 및 보고서 생성
 
 ## 4. 데이터 전처리
 
