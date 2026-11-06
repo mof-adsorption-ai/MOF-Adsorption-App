@@ -3,15 +3,15 @@
 
 ## 1. 담당 업무
 
-| 담당 | 파일 | 구현 기능 |
-|---|---|---|
-| 1 | `util/cif_input.py` | CIF 로딩 및 구조 검사 |
-| 2 | `util/cif_vis.py` | 결정구조 시각화 |
-| 3 | `util/model.py` | CGCNN 체크포인트 로딩, 그래프 생성, CO₂/N₂ 추론 |
-| 4 | `util/plotting.py` | 예측 결과 및 DB 그래프 |
-| 5 | `util/db_search.py` | DB 검색·정렬·흡착량 비율 계산 |
-| 6 | `util/report.py` | 결과 PDF 생성 |
-| 7 | `main.py`, `app/`, `requirements.txt` | 6개 모듈 연결, 웹 UI 및 통합 테스트 |
+| 담당 | 파일 | 구현 기능 | 담당자 |
+|---|---|---| ---|
+| 1 | `util/cif_input.py` | CIF 로딩 및 구조 검사 | |
+| 2 | `util/cif_vis.py` | 결정구조 시각화 | 김지현 |
+| 3 | `util/model.py` | CGCNN 체크포인트 로딩, 그래프 생성, CO₂/N₂ 추론 | 정명수| 
+| 4 | `util/plotting.py` | 예측 결과 및 DB 그래프 | 최종민 |
+| 5 | `util/db_search.py` | DB 검색·정렬·흡착량 비율 계산 |이승호  |
+| 6 | `util/report.py` | 결과 PDF 생성 | 이용호|
+| 7 | `main.py`, `app/`, `requirements.txt` | 6개 모듈 연결, 웹 UI 및 통합 테스트 | 문충만 |
 
 ## 2. 폴더 구조
 
