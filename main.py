@@ -38,19 +38,28 @@ def render_structure() -> None:
         st.write(dict(zip(("α (°)", "β (°)", "γ (°)"), structure.lattice.angles)))
         st.code(st.session_state["cif_bytes"].decode("utf-8", errors="replace"), language="text")
 
-    if st.button("구조 시각화", type="primary", use_container_width=True):
+    regenerate = st.button("구조 이미지 다시 생성", type="primary", use_container_width=True)
+    if regenerate or not st.session_state.get("structure_image_attempted"):
+        st.session_state["structure_image_attempted"] = True
+        st.session_state.pop("structure_image_error", None)
         try:
             from utils.cif_vis import visualize_structure
 
             with st.spinner("결정구조 이미지를 생성하고 있습니다…"):
                 path = Path(st.session_state["workdir"].name) / "structure.png"
-                st.session_state["structure_image"] = visualize_structure(structure, path)
+                image_path = visualize_structure(structure, path)
+                st.session_state["structure_image"] = Path(image_path).read_bytes()
         except Exception as error:
-            show_error(error)
+            st.session_state["structure_image_error"] = error
+    if st.session_state.get("structure_image_error") is not None:
+        show_error(st.session_state["structure_image_error"])
     if st.session_state.get("structure_image"):
         st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
-    else:
-        st.caption("구조 이미지 표시 영역 · utils/cif_vis.py 연결 예정")
+        st.caption("단위격자 내 원자 배치와 원소별 색상을 표시한 정적 이미지입니다. 결합선은 표시하지 않습니다.")
+        st.download_button(
+            "구조 이미지 PNG 다운로드", st.session_state["structure_image"],
+            file_name=f"{st.session_state['mof_id']}_structure.png", mime="image/png",
+        )
 
 
 def render_prediction() -> None:
@@ -271,7 +280,8 @@ def main() -> None:
             token = sha256(contents).hexdigest() + uploaded.name
             if token != st.session_state.get("upload_token"):
                 for key in ("structure", "structure_image", "results", "adsorption_image",
-                            "cif_bytes", "mof_id", "upload_error"):
+                            "cif_bytes", "mof_id", "upload_error",
+                            "structure_image_attempted", "structure_image_error"):
                     st.session_state.pop(key, None)
                 st.session_state["upload_token"] = token
                 try:
@@ -290,7 +300,8 @@ def main() -> None:
                 st.success(f"{uploaded.name} 로딩 완료")
         else:
             for key in ("upload_token", "structure", "structure_image", "results",
-                        "adsorption_image", "cif_bytes", "mof_id", "upload_error"):
+                        "adsorption_image", "cif_bytes", "mof_id", "upload_error",
+                        "structure_image_attempted", "structure_image_error"):
                 st.session_state.pop(key, None)
         st.divider()
         st.caption("사용 순서")
