@@ -1,9 +1,10 @@
-# Python 3.10.20
+# Local environment verified with Python 3.13.15 (Windows).
 
 torch==2.7.0         # CGCNN 추론
 numpy==2.2.6         # 수치 계산
 pandas==2.3.3        # DB·결과 처리
 pymatgen==2025.10.7  # CIF·결정구조 처리
+spglib==2.6.0       # Verified Windows wheel; 2.8.0 DLL loading failed locally.
 matplotlib==3.10.9   # 구조·결과 시각화
 pyarrow==25.0.1      # Parquet 읽기
 streamlit==1.64.0    # 웹 UI

@@ -91,3 +91,4 @@ def prepare_model_input(structure: Structure, checkpoint_path: str | Path) -> Gr
         "nbr_idx": nbr_idx,
         "n_atoms": n_atoms,
         "formula": structure.composition.reduced_formula,
+    }

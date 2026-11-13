@@ -138,3 +138,24 @@ $$
 4. 입력/출력 데이터의 정규화 및 역정규화는 위의 데이터 전처리 설정을 따른다.
 5. 개인 PC의 절대 경로를 사용하지 않고, 필요한 경로는 함수 인자로 전달받는다.
 6. 각 담당자는 `.py` 파일과 필요 패키지 목록을 GitHub을 통해 제출한다.
+
+## 로컬 실행 환경 (Windows)
+
+이 작업 폴더는 Python 3.13과 프로젝트 전용 `.venv`를 사용합니다.
+
+```powershell
+# 처음 설치할 때
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# 앱 실행 (가상환경 활성화 불필요)
+.\run.cmd
+```
+
+브라우저에서 http://localhost:8501 을 엽니다. 종료는 터미널에서 Ctrl+C를 누릅니다.
+VS Code에서는 Python 인터프리터를 `.venv\Scripts\python.exe`로 선택하고,
+실행 및 디버그에서 `MOF App (Streamlit)`을 선택해 F5로 실행할 수 있습니다.
+
+샘플 CIF는 `data/cif/`에 있습니다. `data/mof_cif.parquet`가 작은 Git LFS
+포인터 파일이면 DB 검색을 위해 Git LFS의 실제 데이터를 받아야 합니다.
+흡착량 그래프는 현재 `utils/plotting.py` 구현이 필요합니다.
