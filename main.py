@@ -1,5 +1,6 @@
 def main() -> None:
     """Returns: None."""
+    """Returns: None."""
     raise NotImplementedError
 
 
