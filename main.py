@@ -105,18 +105,24 @@ def render_prediction() -> None:
     st.download_button("예측 결과 CSV 다운로드", results.to_csv(index=False).encode("utf-8-sig"),
                        file_name="adsorption_results.csv", mime="text/csv")
     if st.button("흡착량 그래프 생성", use_container_width=True):
+        st.session_state.pop("adsorption_image", None)
         try:
             from utils.plotting import plot_adsorption
 
             with st.spinner("흡착량 그래프를 생성하고 있습니다…"):
                 path = Path(st.session_state["workdir"].name) / "adsorption.png"
-                st.session_state["adsorption_image"] = plot_adsorption(
+                image_path = plot_adsorption(
                     results, path, db_results=st.session_state.get("db_results")
                 )
+                st.session_state["adsorption_image"] = Path(image_path).read_bytes()
         except Exception as error:
             show_error(error)
     if st.session_state.get("adsorption_image"):
         st.image(st.session_state["adsorption_image"], use_container_width=True)
+        st.download_button(
+            "흡착량 그래프 PNG 다운로드", st.session_state["adsorption_image"],
+            file_name=f"{st.session_state['mof_id']}_adsorption.png", mime="image/png",
+        )
 
 
 def render_database() -> None:

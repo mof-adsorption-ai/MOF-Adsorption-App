@@ -158,4 +158,13 @@ VS Code에서는 Python 인터프리터를 `.venv\Scripts\python.exe`로 선택�
 
 샘플 CIF는 `data/cif/`에 있습니다. `data/mof_cif.parquet`가 작은 Git LFS
 포인터 파일이면 DB 검색을 위해 Git LFS의 실제 데이터를 받아야 합니다.
-흡착량 그래프는 현재 `utils/plotting.py` 구현이 필요합니다.
+예측 후 `흡착량 그래프 생성`을 누르면 CO₂·N₂ 그래프를 확인하고 PNG로
+다운로드할 수 있습니다. DB 검색 결과가 있으면 비교 곡선도 표시됩니다.
+DB 비교에는 예측과 동일한 압력·흡착량 단위를 사용하고, MOF·기체별로
+하나의 온도 조건만 포함해야 합니다.
+
+그래프 모듈 테스트는 다음 명령으로 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
