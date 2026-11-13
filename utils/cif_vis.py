@@ -11,7 +11,7 @@ from pathlib import Path
 
 import matplotlib
 
-# 웹 서버 등 화면이 없는 환경에서도 이미지 파일을 생성하도록 설정합니다.
+# 웹 서버 등 화면이 없는 환경에서도 이미지 파일을 생성하도록 설정합니다....
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
