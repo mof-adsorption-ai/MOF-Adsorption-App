@@ -51,6 +51,29 @@ MOF-project/
 └── outputs/
 ```
 
+### 실제 데이터베이스 다운로드 및 조회
+
+프로젝트 폴더에서 다음 명령으로 Git LFS 데이터를 다운로드합니다.
+`data/mof_cif.parquet`가 약 137바이트라면 실제 데이터가 아닌 LFS 포인터입니다.
+실제 파일은 약 372MB입니다.
+
+```powershell
+git lfs install
+git lfs pull --include="data/mof_cif.parquet"
+python -m streamlit run main.py
+```
+
+`search_mofs(gas, pressure, extremum="max", row_count=10, *, db_path=...)`는
+지정한 압력에서 최대/최소 순으로 MOF를 반환합니다. 가스는 `CO2`, `N2`,
+`N2 대비 CO2`(`CO2/N2`)이며 정렬은 `max`/`min` 또는 `최대`/`최소`입니다.
+기본 DB의 배열형 압력·흡착량과 일반적인 long/wide 형식을 지원합니다.
+구조 ID·이름과 격자 정보를 반환하며, 검색에는 원자 좌표 배열을 로드하지 않습니다.
+
+기본 DB는 298 K에서 CO2 압력 0.01, 0.05, 0.1, 0.5, 2.5와
+N2 압력 0.09, 0.9를 제공합니다. 압력은 DB 단위를 그대로 사용하며 보간하지 않습니다.
+두 기체의 공통 압력이 없으므로 기본 DB에서 같은 압력의 CO2/N2 비율은
+조회할 수 없습니다. 공통 압력·온도 데이터가 있는 DB에서는 비율 조회를 지원합니다.
+
 ## 3. 함수 인터페이스
 
 각 담당자는 자신의 `.py` 파일에 외부 호출용 대표 `def` 함수 하나를 구현한다. 내부 보조 함수와 클래스는 자유롭게 구현할 수 있으며, 모든 대표 함수는 `main.py`에서 `import`하여 호출할 수 있어야 한다.

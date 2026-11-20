@@ -1,10 +1,122 @@
 from pathlib import Path
 from collections.abc import Iterable, Sequence
 from typing import Any
+from math import isfinite
+from numbers import Integral
 import pandas as pd
 
 
 _ADSORPTION_NAMES = ("adsorption", "uptake", "loading", "capacity")
+
+
+def _read_search_data(db_path: str | Path, gas: str, pressure: float) -> pd.DataFrame:
+    """Normalize bundled list-valued isotherms, without loading atom arrays.
+
+    Return structural identifiers and lattice metadata with one measured
+    adsorption point per row. Never interpolate or extrapolate measurements.
+    """
+    path = Path(db_path)
+    if path.suffix.lower() != ".parquet" or _looks_like_git_lfs_pointer(path):
+        return _read_database(path)
+    import pyarrow.parquet as pq
+
+    names = pq.ParquetFile(path).schema_arrow.names
+    gases = ["CO2", "N2"] if gas == "N2 대비 CO2" else [gas]
+    if not all(f"{g.lower()}_pressure" in names and f"{g.lower()}_loading" in names for g in gases):
+        return _read_database(path)
+    metadata = [c for c in ("mof_id", "mof_name", "a", "b", "c", "alpha", "beta", "gamma") if c in names]
+    columns = metadata + [f"{g.lower()}_{field}" for g in gases for field in ("pressure", "loading", "temperature_K") if f"{g.lower()}_{field}" in names]
+    database = pd.read_parquet(path, columns=columns)
+    points = []
+    for g in gases:
+        rename = {f"{g.lower()}_pressure": "pressure", f"{g.lower()}_loading": "adsorption"}
+        temperature = f"{g.lower()}_temperature_K"
+        if temperature in database:
+            rename[temperature] = "temperature_K"
+        part = database[metadata + list(rename)].rename(columns=rename)
+        try:
+            part = part.explode(list(rename.values()), ignore_index=True)
+        except ValueError as error:
+            raise ValueError(f"Mismatched pressure/loading/temperature array lengths for {g}") from error
+        numeric_pressure = pd.to_numeric(part["pressure"], errors="coerce")
+        part = part[(numeric_pressure - pressure).abs() <= max(1e-9, abs(pressure) * 1e-7)].copy()
+        part["pressure"] = pd.to_numeric(part["pressure"], errors="coerce")
+        part["gas"] = g
+        points.append(part)
+    return pd.concat(points, ignore_index=True)
+
+
+def search_mofs(
+    gas: str,
+    pressure: float,
+    extremum: str = "max",
+    row_count: int = 10,
+    *,
+    db_path: str | Path = Path(__file__).resolve().parents[1] / "data" / "mof_cif.parquet",
+) -> pd.DataFrame:
+    """Return up to row_count distinct MOFs ranked at the requested pressure.
+
+    gas: CO2, N2, or 'N2 대비 CO2' (also CO2/N2).
+    extremum: max/min or 최대/최소. Pressure uses the database's units;
+    matches use a small floating-point tolerance, without interpolation.
+    Ratio results exclude missing values and zero N2 uptake. Multiple
+    measurements per MOF/gas/pressure are rejected as ambiguous.
+    """
+    gas = {"CO2/N2": "N2 대비 CO2"}.get(gas, gas)
+    if gas not in {"CO2", "N2", "N2 대비 CO2"}:
+        raise ValueError("gas must be CO2, N2, or N2 대비 CO2")
+    direction = {"max": False, "min": True, "최대": False, "최소": True}
+    if extremum not in direction:
+        raise ValueError("extremum must be max/min or 최대/최소")
+    if isinstance(row_count, bool) or not isinstance(row_count, Integral) or row_count < 1:
+        raise ValueError("row_count must be a positive integer")
+    if isinstance(pressure, bool) or not isfinite(float(pressure)) or float(pressure) < 0:
+        raise ValueError("pressure must be finite and non-negative")
+    pressure = float(pressure)
+    frame = _read_search_data(db_path, gas, pressure)
+    id_column = _resolve_column(frame, "mof_id")
+    pressure_column = _resolve_column(frame, "pressure")
+    numeric_pressure = pd.to_numeric(frame[pressure_column], errors="coerce")
+    frame = frame[(numeric_pressure - pressure).abs() <= max(1e-9, abs(pressure) * 1e-7)].copy()
+    gas_column = _find_column(frame, ["gas", "component"])
+    if gas_column is not None:
+        value_column = _find_column(frame, _ADSORPTION_NAMES)
+        if value_column is None:
+            raise KeyError("Missing adsorption/uptake/loading/capacity column")
+        normalized_gas = frame[gas_column].astype(str).str.strip().str.upper()
+        selected = {"CO2", "N2"} if gas == "N2 대비 CO2" else {gas}
+        frame = frame[normalized_gas.isin(selected)].copy()
+        frame[gas_column] = normalized_gas.loc[frame.index]
+        if frame.duplicated([id_column, gas_column]).any():
+            raise ValueError("Multiple measurements per MOF and gas; select a single measurement condition in the database.")
+        frame[value_column] = pd.to_numeric(frame[value_column], errors="coerce")
+        if gas == "N2 대비 CO2":
+            co2 = frame[frame[gas_column] == "CO2"].copy()
+            n2 = frame[frame[gas_column] == "N2"][[id_column, value_column]].rename(
+                columns={value_column: "N2_adsorption"}
+            )
+            # Do not combine measurements made at different temperatures.
+            temperatures = [c for c in frame.columns if str(c).casefold() in {"temperature", "temperature_k"}]
+            if temperatures:
+                n2 = frame[frame[gas_column] == "N2"][[id_column, value_column] + temperatures].rename(columns={value_column: "N2_adsorption"})
+            frame = co2.merge(n2, on=[id_column] + temperatures, how="inner")
+            frame["selectivity_CO2_N2"] = frame[value_column] / frame["N2_adsorption"].mask(frame["N2_adsorption"] == 0)
+            score = "selectivity_CO2_N2"
+        else:
+            score = value_column
+    else:
+        if frame.duplicated(id_column).any():
+            raise ValueError("Multiple measurements per MOF; select a single measurement condition in the database.")
+        if gas == "N2 대비 CO2":
+            frame = _add_selectivity(frame)
+            score = "selectivity_CO2_N2"
+        else:
+            score = _find_gas_value_column(frame, gas)
+            if score is None:
+                raise KeyError(f"Missing adsorption column for {gas}")
+    frame[score] = pd.to_numeric(frame[score], errors="coerce")
+    valid = frame[score].notna() & ~frame[score].isin([float("inf"), float("-inf")]) & frame[id_column].notna()
+    return frame[valid].sort_values(score, ascending=direction[extremum], kind="stable").head(row_count).reset_index(drop=True)
 
 
 def _read_database(db_path: str | Path) -> pd.DataFrame:
