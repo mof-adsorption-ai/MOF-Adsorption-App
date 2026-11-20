@@ -37,6 +37,24 @@ def render_structure() -> None:
         st.write(dict(zip(("α (°)", "β (°)", "γ (°)"), structure.lattice.angles)))
         st.code(st.session_state["cif_bytes"].decode("utf-8", errors="replace"), language="text")
 
+    styles = {"Ball & Stick": "ball_and_stick", "Sphere": "space_filling", "Atoms": "atoms_only"}
+    selected_style = st.segmented_control(
+        "결정구조 표시 스타일", options=list(styles), default="Ball & Stick",
+        selection_mode="single", required=True, width="stretch",
+    )
+    try:
+        from utils.cif_vis import create_interactive_structure
+
+        figure = create_interactive_structure(structure, style=styles[selected_style])
+        figure.update_layout(
+            font={"size": 14, "color": "#303440"},
+            hoverlabel={"bgcolor": "white", "font_size": 14, "font_color": "#303440"},
+        )
+        st.plotly_chart(figure, width="stretch", config={"displaylogo": False, "scrollZoom": True})
+        st.caption("드래그로 회전하고 마우스 휠로 확대·축소할 수 있습니다.")
+    except Exception as error:
+        show_error(error)
+
     regenerate = st.button("구조 이미지 다시 생성", use_container_width=True)
     if regenerate or not st.session_state.get("structure_image_attempted"):
         st.session_state.pop("report_files", None)
@@ -54,8 +72,9 @@ def render_structure() -> None:
     if st.session_state.get("structure_image_error") is not None:
         show_error(st.session_state["structure_image_error"])
     if st.session_state.get("structure_image"):
-        st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
-        st.caption("단위격자 내 원자 배치와 원소별 색상을 표시한 정적 이미지입니다. 결합선은 표시하지 않습니다.")
+        with st.expander("정적 PNG 미리보기"):
+            st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
+            st.caption("보고서에 사용하는 정적 이미지입니다. 결합선은 표시하지 않습니다.")
         st.download_button(
             "구조 이미지 PNG 다운로드", st.session_state["structure_image"],
             file_name=f"{st.session_state['mof_id']}_structure.png", mime="image/png",
@@ -71,6 +90,7 @@ def render_prediction() -> None:
         start = left.number_input("시작 압력", min_value=0.0, value=0.0, step=0.1)
         end = right.number_input("종료 압력", min_value=0.0, value=1.0, step=0.1)
         count = st.slider("계산 지점 수", 2, 100, 11)
+        pressure_text = st.text_input("또는 압력 목록 직접 입력", value="", help="입력하면 위 범위 대신 사용합니다. 쉼표 또는 공백으로 구분하세요.")
         submitted = st.form_submit_button(
             "흡착량 계산", type="primary", use_container_width=True,
             disabled=st.session_state.get("structure") is None,
@@ -78,14 +98,21 @@ def render_prediction() -> None:
     if st.session_state.get("structure") is None:
         st.info("예측을 시작하려면 CIF 파일을 먼저 업로드해 주세요.")
     if submitted:
-        if not gases or end <= start:
+        if not gases or (not pressure_text.strip() and end <= start):
             st.warning("기체를 하나 이상 선택하고 종료 압력을 시작 압력보다 크게 설정해 주세요.")
         else:
             try:
                 from utils.preprocessing import prepare_model_input
                 from utils.model import predict_adsorption
 
-                pressures = [start + (end - start) * i / (count - 1) for i in range(count)]
+                if pressure_text.strip():
+                    from math import isfinite
+
+                    pressures = sorted(set(float(p) for p in pressure_text.replace(",", " ").split()))
+                    if not pressures or any(not isfinite(p) or p < 0 for p in pressures):
+                        raise ValueError("압력은 0 이상의 유한한 숫자로 입력하세요.")
+                else:
+                    pressures = [start + (end - start) * i / (count - 1) for i in range(count)]
                 with st.spinner("구조를 그래프로 변환하고 흡착량을 계산하고 있습니다…"):
                     graph = prepare_model_input(st.session_state["structure"], CHECKPOINT)
                     results = predict_adsorption(
@@ -118,6 +145,7 @@ def render_prediction() -> None:
             show_error(error)
     if st.session_state.get("adsorption_image"):
         st.image(st.session_state["adsorption_image"], use_container_width=True)
+        st.download_button("흡착량 그래프 PNG 다운로드", Path(st.session_state["adsorption_image"]).read_bytes(), file_name="adsorption.png", mime="image/png")
 
 
 def render_result_table(results) -> None:
@@ -197,9 +225,12 @@ def render_database_results(submitted: bool, gas: str, pressure: float, extremum
 def render_upload() -> None:
     uploaded = st.file_uploader("MOF 결정구조 업로드", type=["cif"],
                                 help="결정구조가 저장된 .cif 파일을 선택하세요.")
-    if uploaded is not None:
-        contents = uploaded.getvalue()
-        token = sha256(contents).hexdigest() + uploaded.name
+    samples = {p.name: p for p in sorted((ROOT / "data" / "cif").glob("*.cif"))}
+    sample = st.selectbox("또는 샘플 CIF 선택", ["선택 안 함"] + list(samples), disabled=uploaded is not None)
+    if uploaded is not None or sample in samples:
+        contents = uploaded.getvalue() if uploaded is not None else samples[sample].read_bytes()
+        name = uploaded.name if uploaded is not None else sample
+        token = sha256(contents).hexdigest() + name
         if token != st.session_state.get("upload_token"):
             for key in ("structure", "structure_image", "results", "adsorption_image",
                         "cif_bytes", "mof_id", "upload_error",
@@ -213,13 +244,13 @@ def render_upload() -> None:
                 path.write_bytes(contents)
                 st.session_state["structure"] = load_cif(path)
                 st.session_state["cif_bytes"] = contents
-                st.session_state["mof_id"] = Path(uploaded.name).stem
+                st.session_state["mof_id"] = Path(name).stem
             except Exception as error:
                 st.session_state["upload_error"] = error
         if st.session_state.get("upload_error") is not None:
             show_error(st.session_state["upload_error"])
         elif st.session_state.get("structure") is not None:
-            st.success(f"{uploaded.name} 로딩 완료")
+            st.success(f"{name} 로딩 완료")
     else:
         for key in ("upload_token", "structure", "structure_image", "results",
                     "adsorption_image", "cif_bytes", "mof_id", "upload_error",
@@ -279,6 +310,7 @@ def render_report() -> None:
 
 
 def main() -> None:
+    global CHECKPOINT, DATABASE
     st.set_page_config(page_title="MOF Adsorption Lab", page_icon="🧪", layout="wide")
     st.markdown("""
         <style>
@@ -417,6 +449,23 @@ def main() -> None:
 
     st.title("MOF Adsorption Lab")
     st.caption("구조 입력부터 흡착량 예측과 보고서 작성까지 · MOF 데이터베이스 비교")
+    with st.expander("데이터 파일 설정"):
+        left, right = st.columns(2)
+        checkpoint_text = left.text_input("모델 체크포인트", value="models/cgcnn_scratch_model.pt")
+        database_text = right.text_input("MOF DB 경로", value="data/mof_cif.parquet")
+        st.caption("상대 경로는 프로젝트 폴더 기준입니다.")
+    checkpoint_path = Path(checkpoint_text.strip()).expanduser()
+    database_path = Path(database_text.strip()).expanduser()
+    CHECKPOINT = checkpoint_path if checkpoint_path.is_absolute() else ROOT / checkpoint_path
+    DATABASE = database_path if database_path.is_absolute() else ROOT / database_path
+    for key, value, dependent in (
+        ("active_checkpoint", str(CHECKPOINT), ("results", "adsorption_image", "report_files")),
+        ("active_db_path", str(DATABASE), ("db_results", "db_query", "adsorption_image", "report_files")),
+    ):
+        if st.session_state.get(key) != value:
+            for item in dependent:
+                st.session_state.pop(item, None)
+            st.session_state[key] = value
     prediction_tab, database_tab = st.tabs(["흡착량 예측", "데이터베이스 조회"])
     with prediction_tab:
         with st.container(border=True):
