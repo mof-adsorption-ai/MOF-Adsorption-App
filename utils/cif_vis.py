@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
-from pymatgen.core import Structure
+from pymatgen.core import Element, Structure
 
 
 # 원소별 표시 색상입니다. 없는 원소는 회색으로 표시합니다.
@@ -37,6 +37,12 @@ _ELEMENT_SIZES = {
 _PLOTLY_ELEMENT_SIZES = {
     "H": 5, "C": 8, "N": 9, "O": 9, "F": 9,
     "Zn": 13, "Cu": 12, "Zr": 14, "Al": 11,
+}
+
+_VIEW_STYLES = {
+    "ball_and_stick": {"atom_scale": 0.78, "show_bonds": True},
+    "space_filling": {"atom_scale": 1.85, "show_bonds": False},
+    "atoms_only": {"atom_scale": 1.0, "show_bonds": False},
 }
 
 
@@ -63,10 +69,59 @@ def _structure_data(structure: Structure):
     return fractional_positions, atom_positions, elements, corner_fractions, corners
 
 
-def create_interactive_structure(structure: Structure) -> go.Figure:
-    """Create a rotatable and zoomable Plotly 3D structure figure."""
+def _covalent_radius(symbol: str) -> float:
+    """Return a practical bond-detection radius in angstroms."""
+    element = Element(symbol)
+    radius = element.atomic_radius or element.atomic_radius_calculated
+    return float(radius) if radius is not None else 1.0
+
+
+def _bond_coordinates(structure: Structure, positions, elements):
+    """Return line coordinates for likely bonds inside the displayed unit cell."""
+    radii = [_covalent_radius(symbol) for symbol in elements]
+    max_cutoff = min(3.2, max(radii) * 2.5)
+    centers, neighbors, offsets, distances = structure.get_neighbor_list(r=max_cutoff)
+    bond_x, bond_y, bond_z = [], [], []
+    seen = set()
+
+    for center, neighbor, offset, distance in zip(centers, neighbors, offsets, distances):
+        center, neighbor = int(center), int(neighbor)
+        # The viewer displays one unit cell. Skip periodic-image bonds that would
+        # extend outside the cell and duplicate the reverse direction only once.
+        if center == neighbor or np.any(offset != 0):
+            continue
+        pair = tuple(sorted((center, neighbor)))
+        if pair in seen or distance > (radii[center] + radii[neighbor]) * 1.25:
+            continue
+        seen.add(pair)
+        start, end = positions[center], positions[neighbor]
+        bond_x.extend([start[0], end[0], None])
+        bond_y.extend([start[1], end[1], None])
+        bond_z.extend([start[2], end[2], None])
+    return bond_x, bond_y, bond_z
+
+
+def create_interactive_structure(
+    structure: Structure,
+    style: str = "ball_and_stick",
+) -> go.Figure:
+    """Create a rotatable Plotly 3D figure in the requested molecular style."""
+    if style not in _VIEW_STYLES:
+        choices = ", ".join(_VIEW_STYLES)
+        raise ValueError(f"지원하지 않는 표시 스타일입니다: {style}. 선택 가능: {choices}")
+
     fractions, positions, elements, corner_fractions, corners = _structure_data(structure)
     figure = go.Figure()
+    style_options = _VIEW_STYLES[style]
+
+    if style_options["show_bonds"]:
+        bond_x, bond_y, bond_z = _bond_coordinates(structure, positions, elements)
+        figure.add_trace(go.Scatter3d(
+            x=bond_x, y=bond_y, z=bond_z,
+            mode="lines", name="Bonds",
+            line={"color": "#8B929A", "width": 5},
+            hoverinfo="skip", showlegend=False,
+        ))
 
     for element in sorted(set(elements)):
         indices = [index for index, symbol in enumerate(elements) if symbol == element]
@@ -79,7 +134,7 @@ def create_interactive_structure(structure: Structure) -> go.Figure:
             x=points[:, 0], y=points[:, 1], z=points[:, 2],
             mode="markers", name=element,
             marker={
-                "size": _PLOTLY_ELEMENT_SIZES.get(element, 10),
+                "size": _PLOTLY_ELEMENT_SIZES.get(element, 10) * style_options["atom_scale"],
                 "color": _ELEMENT_COLORS.get(element, "#9B9B9B"),
                 "line": {"color": "#333333", "width": 0.7},
                 "opacity": 0.95,

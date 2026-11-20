@@ -41,8 +41,18 @@ def render_structure() -> None:
     try:
         from utils.cif_vis import create_interactive_structure
 
+        style_labels = {
+            "Ball & Stick": "ball_and_stick",
+            "Space-filling Sphere": "space_filling",
+            "Atoms only": "atoms_only",
+        }
+        selected_style = st.selectbox(
+            "결정구조 표시 스타일",
+            options=list(style_labels),
+            help="Ball & Stick은 추정 결합선을, Space-filling Sphere는 큰 원자 구를 표시합니다.",
+        )
         st.plotly_chart(
-            create_interactive_structure(structure),
+            create_interactive_structure(structure, style=style_labels[selected_style]),
             use_container_width=True,
             config={
                 "displaylogo": False,
@@ -50,7 +60,7 @@ def render_structure() -> None:
                 "modeBarButtonsToRemove": ["select3d", "lasso3d"],
             },
         )
-        st.caption("원자에 마우스를 올리면 원소와 좌표가 표시됩니다. 드래그로 회전하고 마우스 휠로 확대·축소하세요.")
+        st.caption("스타일을 바꾸거나 원자에 마우스를 올려 정보를 확인하세요. 드래그로 회전하고 마우스 휠로 확대·축소할 수 있습니다.")
     except Exception as error:
         show_error(error)
 
