@@ -38,7 +38,6 @@ def parse_pressures(text: str) -> list[float]:
 def call_module(module: str, function: str, *args, **kwargs):
     return getattr(import_module(f"utils.{module}"), function)(*args, **kwargs)
 
-
 def build_outputs(result: dict, db_results: pd.DataFrame | None = None) -> dict:
     """Keep output bytes after temporary files have been removed."""
     output = {
@@ -138,11 +137,19 @@ def show_prediction(result: dict):
         st.write(result["graph_info"]["formula"])
         if "structure_data" in result:
             styles = {
-                "Ball & Stick": "ball_and_stick",
-                "Space-filling Sphere": "space_filling",
-                "Atoms only": "atoms_only",
+                "⚛ Ball & Stick": "ball_and_stick",
+                "● Sphere": "space_filling",
+                "· Atoms": "atoms_only",
             }
-            selected_style = st.selectbox("결정구조 표시 스타일", list(styles))
+            selected_style = st.segmented_control(
+                "결정구조 표시 스타일",
+                options=list(styles),
+                default="⚛ Ball & Stick",
+                selection_mode="single",
+                required=True,
+                width="stretch",
+                help="Ball & Stick은 추정 결합선을, Sphere는 큰 원자 구를 표시합니다.",
+            )
             try:
                 from pymatgen.core import Structure
 
