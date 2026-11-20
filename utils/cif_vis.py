@@ -1,4 +1,4 @@
-"""MOF 결정구조를 PNG 이미지로 저장하는 모듈.
+"""MOF 결정구조를 정적 PNG와 대화형 3D 그래프로 시각화하는 모듈.
 
 팀 공통 인터페이스:
     visualize_structure(structure, output_path) -> str
@@ -16,6 +16,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
 from pymatgen.core import Structure
 
 
@@ -32,6 +33,101 @@ _ELEMENT_SIZES = {
     "H": 24, "C": 65, "N": 75, "O": 80, "F": 75,
     "Zn": 145, "Cu": 135, "Zr": 155, "Al": 115,
 }
+
+_PLOTLY_ELEMENT_SIZES = {
+    "H": 5, "C": 8, "N": 9, "O": 9, "F": 9,
+    "Zn": 13, "Cu": 12, "Zr": 14, "Al": 11,
+}
+
+
+def _structure_data(structure: Structure):
+    """Return normalized atom positions, elements, and unit-cell geometry."""
+    if not isinstance(structure, Structure):
+        raise TypeError("structure는 pymatgen.Structure 객체여야 합니다.")
+    if len(structure) == 0:
+        raise ValueError("표시할 원자가 없는 결정구조입니다.")
+
+    fractional_positions = np.mod(np.asarray(structure.frac_coords), 1.0)
+    lattice = np.asarray(structure.lattice.matrix, dtype=float)
+    atom_positions = fractional_positions @ lattice
+    elements = [
+        site.specie.symbol if site.is_ordered
+        else max(site.species.items(), key=lambda item: item[1])[0].symbol
+        for site in structure
+    ]
+    corner_fractions = np.array([
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+        [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
+    ], dtype=float)
+    corners = corner_fractions @ lattice
+    return fractional_positions, atom_positions, elements, corner_fractions, corners
+
+
+def create_interactive_structure(structure: Structure) -> go.Figure:
+    """Create a rotatable and zoomable Plotly 3D structure figure."""
+    fractions, positions, elements, corner_fractions, corners = _structure_data(structure)
+    figure = go.Figure()
+
+    for element in sorted(set(elements)):
+        indices = [index for index, symbol in enumerate(elements) if symbol == element]
+        points = positions[indices]
+        customdata = [
+            [index + 1, element, *fractions[index], *positions[index]]
+            for index in indices
+        ]
+        figure.add_trace(go.Scatter3d(
+            x=points[:, 0], y=points[:, 1], z=points[:, 2],
+            mode="markers", name=element,
+            marker={
+                "size": _PLOTLY_ELEMENT_SIZES.get(element, 10),
+                "color": _ELEMENT_COLORS.get(element, "#9B9B9B"),
+                "line": {"color": "#333333", "width": 0.7},
+                "opacity": 0.95,
+            },
+            customdata=customdata,
+            hovertemplate=(
+                "<b>%{customdata[1]}</b> · atom #%{customdata[0]}<br>"
+                "Cartesian (Å): %{customdata[5]:.3f}, %{customdata[6]:.3f}, %{customdata[7]:.3f}<br>"
+                "Fractional: %{customdata[2]:.3f}, %{customdata[3]:.3f}, %{customdata[4]:.3f}"
+                "<extra></extra>"
+            ),
+        ))
+
+    edge_x, edge_y, edge_z = [], [], []
+    for i in range(8):
+        for j in range(i + 1, 8):
+            if np.count_nonzero(corner_fractions[i] != corner_fractions[j]) == 1:
+                edge_x.extend([corners[i, 0], corners[j, 0], None])
+                edge_y.extend([corners[i, 1], corners[j, 1], None])
+                edge_z.extend([corners[i, 2], corners[j, 2], None])
+    figure.add_trace(go.Scatter3d(
+        x=edge_x, y=edge_y, z=edge_z,
+        mode="lines", name="Unit cell",
+        line={"color": "#679AB7", "width": 4},
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    axis_style = {
+        "showbackground": True,
+        "backgroundcolor": "#F7FAFC",
+        "gridcolor": "#D9E2EA",
+        "zerolinecolor": "#AAB7C4",
+    }
+    figure.update_layout(
+        title={"text": f"MOF Crystal Structure · {len(structure)} atoms", "x": 0.5},
+        height=680,
+        margin={"l": 0, "r": 0, "t": 55, "b": 0},
+        legend={"title": {"text": "Elements"}, "orientation": "h", "y": 1.02},
+        scene={
+            "xaxis": {"title": "X (Å)", **axis_style},
+            "yaxis": {"title": "Y (Å)", **axis_style},
+            "zaxis": {"title": "Z (Å)", **axis_style},
+            "aspectmode": "data",
+            "camera": {"eye": {"x": 1.45, "y": 1.45, "z": 1.1}},
+        },
+        hoverlabel={"bgcolor": "white", "font_size": 13},
+    )
+    return figure
 
 
 def visualize_structure(structure, output_path):
@@ -67,19 +163,7 @@ def visualize_structure(structure, output_path):
     # 예: -0.2 -> 0.8, 1.3 -> 0.3
     # 이는 주기적 결정의 동등한 위치로 옮기는 작업입니다.
     # 주의: 경계에 걸친 분자의 결합선은 이 그림에서 표현하지 않습니다.
-    fractional_positions = np.mod(np.asarray(structure.frac_coords), 1.0)
-
-    # 4단계: 분율좌표를 실제 3차원 좌표(단위: 옹스트롬, Å)로 바꿉니다.
-    lattice = np.asarray(structure.lattice.matrix, dtype=float)
-    atom_positions = fractional_positions @ lattice
-
-    # 5단계: Unit Cell의 꼭짓점 8개를 계산합니다.
-    # (0,0,0)부터 (1,1,1)까지 분율좌표의 조합입니다.
-    corner_fractions = np.array([
-        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
-        [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
-    ], dtype=float)
-    corners = corner_fractions @ lattice
+    fractional_positions, atom_positions, elements, corner_fractions, corners = _structure_data(structure)
 
     # 6단계: 3차원 그림을 생성합니다.
     fig = plt.figure(figsize=(8, 7), facecolor="white")
@@ -89,9 +173,6 @@ def visualize_structure(structure, output_path):
     try:
         # 7단계: 원소별로 색상과 크기를 다르게 하여 원자를 표시합니다.
         # 혼합 점유 원자 사이트는 대표 원소로 표시합니다.
-        elements = [site.specie.symbol if site.is_ordered else
-                    max(site.species.items(), key=lambda item: item[1])[0].symbol
-                    for site in structure]
         for element in sorted(set(elements)):
             indices = [i for i, symbol in enumerate(elements) if symbol == element]
             points = atom_positions[indices]

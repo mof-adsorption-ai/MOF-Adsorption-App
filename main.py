@@ -38,7 +38,23 @@ def render_structure() -> None:
         st.write(dict(zip(("α (°)", "β (°)", "γ (°)"), structure.lattice.angles)))
         st.code(st.session_state["cif_bytes"].decode("utf-8", errors="replace"), language="text")
 
-    regenerate = st.button("구조 이미지 다시 생성", type="primary", use_container_width=True)
+    try:
+        from utils.cif_vis import create_interactive_structure
+
+        st.plotly_chart(
+            create_interactive_structure(structure),
+            use_container_width=True,
+            config={
+                "displaylogo": False,
+                "scrollZoom": True,
+                "modeBarButtonsToRemove": ["select3d", "lasso3d"],
+            },
+        )
+        st.caption("원자에 마우스를 올리면 원소와 좌표가 표시됩니다. 드래그로 회전하고 마우스 휠로 확대·축소하세요.")
+    except Exception as error:
+        show_error(error)
+
+    regenerate = st.button("구조 PNG 다시 생성", type="primary", use_container_width=True)
     if regenerate or not st.session_state.get("structure_image_attempted"):
         st.session_state["structure_image_attempted"] = True
         st.session_state.pop("structure_image_error", None)
@@ -54,12 +70,12 @@ def render_structure() -> None:
     if st.session_state.get("structure_image_error") is not None:
         show_error(st.session_state["structure_image_error"])
     if st.session_state.get("structure_image"):
-        st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
-        st.caption("단위격자 내 원자 배치와 원소별 색상을 표시한 정적 이미지입니다. 결합선은 표시하지 않습니다.")
-        st.download_button(
-            "구조 이미지 PNG 다운로드", st.session_state["structure_image"],
-            file_name=f"{st.session_state['mof_id']}_structure.png", mime="image/png",
-        )
+        with st.expander("정적 PNG 미리보기 및 다운로드"):
+            st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
+            st.download_button(
+                "구조 이미지 PNG 다운로드", st.session_state["structure_image"],
+                file_name=f"{st.session_state['mof_id']}_structure.png", mime="image/png",
+            )
 
 
 def render_prediction() -> None:
