@@ -1,358 +1,334 @@
-"""Streamlit entry point. Run with: streamlit run main.py."""
+"""Streamlit UI integrating the team's MOF modules.
 
-from hashlib import sha256
+Run with: python -m streamlit run main.py
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+from importlib import import_module, util
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pandas as pd
 import streamlit as st
 
 
 ROOT = Path(__file__).resolve().parent
-CHECKPOINT = ROOT / "models" / "cgcnn_scratch_model.pt"
-DATABASE = ROOT / "data" / "mof_cif.parquet"
+LOGGER = logging.getLogger(__name__)
 
 
-def show_error(error: Exception) -> None:
-    """Keep unfinished team modules from interrupting the page."""
-    if isinstance(error, NotImplementedError):
-        st.info("이 기능은 담당 모듈 구현 후 연결됩니다. 현재는 페이지 시안을 확인할 수 있습니다.")
-    elif isinstance(error, ImportError):
-        st.error("기능 실행에 필요한 패키지를 불러올 수 없습니다. 설치 환경을 확인해 주세요.")
-        st.caption(str(error))
-    else:
-        st.error(f"처리 중 오류가 발생했습니다: {error}")
+def resolve_path(value: str) -> Path:
+    path = Path(value.strip()).expanduser()
+    return path if path.is_absolute() else ROOT / path
 
 
-def render_structure() -> None:
-    structure = st.session_state.get("structure")
-    if structure is None:
-        st.info("왼쪽에서 CIF 파일을 업로드하면 결정구조 정보를 확인할 수 있습니다.")
-        return
+def parse_pressures(text: str) -> list[float]:
+    tokens = text.replace(",", " ").split()
+    if not tokens:
+        raise ValueError("압력을 하나 이상 입력하세요.")
+    values = [float(token) for token in tokens]
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("압력은 0 이상의 유한한 숫자로 입력하세요.")
+    return sorted(set(values))
 
-    a, b, c = st.columns(3)
-    a.metric("화학식", structure.composition.reduced_formula)
-    b.metric("원자 수", len(structure))
-    c.metric("단위격자 부피", f"{structure.volume:,.2f} Å³")
-    with st.expander("격자 정보 · CIF 원문"):
-        st.write(dict(zip(("a (Å)", "b (Å)", "c (Å)"), structure.lattice.abc)))
-        st.write(dict(zip(("α (°)", "β (°)", "γ (°)"), structure.lattice.angles)))
-        st.code(st.session_state["cif_bytes"].decode("utf-8", errors="replace"), language="text")
 
-    try:
-        from utils.cif_vis import create_interactive_structure
+def call_module(module: str, function: str, *args, **kwargs):
+    return getattr(import_module(f"utils.{module}"), function)(*args, **kwargs)
 
-        style_labels = {
-            "Ball & Stick": "ball_and_stick",
-            "Space-filling Sphere": "space_filling",
-            "Atoms only": "atoms_only",
-        }
-        selected_style = st.selectbox(
-            "결정구조 표시 스타일",
-            options=list(style_labels),
-            help="Ball & Stick은 추정 결합선을, Space-filling Sphere는 큰 원자 구를 표시합니다.",
-        )
-        st.plotly_chart(
-            create_interactive_structure(structure, style=style_labels[selected_style]),
-            use_container_width=True,
-            config={
-                "displaylogo": False,
-                "scrollZoom": True,
-                "modeBarButtonsToRemove": ["select3d", "lasso3d"],
-            },
-        )
-        st.caption("스타일을 바꾸거나 원자에 마우스를 올려 정보를 확인하세요. 드래그로 회전하고 마우스 휠로 확대·축소할 수 있습니다.")
-    except Exception as error:
-        show_error(error)
 
-    regenerate = st.button("구조 PNG 다시 생성", type="primary", use_container_width=True)
-    if regenerate or not st.session_state.get("structure_image_attempted"):
-        st.session_state["structure_image_attempted"] = True
-        st.session_state.pop("structure_image_error", None)
+def build_outputs(result: dict, db_results: pd.DataFrame | None = None) -> dict:
+    """Keep output bytes after temporary files have been removed."""
+    output = {
+        "csv": result["table"].to_csv(index=False).encode("utf-8-sig"),
+        "plot": None,
+        "pdf": None,
+        "warnings": list(result["input_warnings"]),
+        "comparison": db_results is not None and not db_results.empty,
+    }
+    with TemporaryDirectory(prefix="mof-report-") as directory:
+        work = Path(directory)
+        images = []
+        if result["structure_image"] is not None:
+            image_path = work / "structure.png"
+            image_path.write_bytes(result["structure_image"])
+            images.append(str(image_path))
         try:
-            from utils.cif_vis import visualize_structure
-
-            with st.spinner("결정구조 이미지를 생성하고 있습니다…"):
-                path = Path(st.session_state["workdir"].name) / "structure.png"
-                image_path = visualize_structure(structure, path)
-                st.session_state["structure_image"] = Path(image_path).read_bytes()
-        except Exception as error:
-            st.session_state["structure_image_error"] = error
-    if st.session_state.get("structure_image_error") is not None:
-        show_error(st.session_state["structure_image_error"])
-    if st.session_state.get("structure_image"):
-        with st.expander("정적 PNG 미리보기 및 다운로드"):
-            st.image(st.session_state["structure_image"], caption="MOF 결정구조", use_container_width=True)
-            st.download_button(
-                "구조 이미지 PNG 다운로드", st.session_state["structure_image"],
-                file_name=f"{st.session_state['mof_id']}_structure.png", mime="image/png",
+            plot_path = Path(call_module(
+                "plotting", "plot_adsorption", result["table"],
+                str(work / "adsorption.png"), db_results=db_results,
+            ))
+            output["plot"] = plot_path.read_bytes()
+            images.append(str(plot_path))
+        except Exception as exc:
+            LOGGER.exception("Plot generation failed")
+            output["warnings"].append(f"그래프 생성 실패 — {exc}")
+        try:
+            files = call_module(
+                "report", "create_report", result["table"], images,
+                result["graph_info"], str(work / "report.pdf"), db_results=db_results,
             )
+            output["pdf"] = Path(files["pdf_path"]).read_bytes()
+            output["csv"] = Path(files["csv_path"]).read_bytes()
+        except Exception as exc:
+            LOGGER.exception("Report generation failed")
+            output["warnings"].append(f"PDF 보고서 생성 실패 — {exc}")
+    return output
 
 
-def render_prediction() -> None:
-    st.subheader("흡착량 예측")
-    st.caption("결정구조와 압력 조건을 입력하여 CO₂·N₂ 흡착량을 계산합니다.")
-    with st.form("prediction_form"):
-        gases = st.multiselect("대상 기체", ["CO2", "N2"], default=["CO2", "N2"])
-        st.caption("압력 단위는 모델 학습 데이터의 기준을 따릅니다. 모듈 통합 시 확정합니다.")
-        left, right = st.columns(2)
-        start = left.number_input("시작 압력", min_value=0.0, value=0.0, step=0.1)
-        end = right.number_input("종료 압력", min_value=0.0, value=1.0, step=0.1)
-        count = st.slider("계산 지점 수", 2, 100, 11)
-        submitted = st.form_submit_button(
-            "흡착량 계산", type="primary", use_container_width=True,
-            disabled=st.session_state.get("structure") is None,
+def run_prediction(cif_bytes: bytes, name: str, pressures: list[float],
+                   gases: list[str], checkpoint: Path) -> dict:
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"모델 체크포인트를 찾을 수 없습니다. {checkpoint}")
+    mof_id = Path(name.replace("\\", "/")).stem
+    with TemporaryDirectory(prefix="mof-predict-") as directory:
+        work = Path(directory)
+        cif_path = work / "input.cif"
+        cif_path.write_bytes(cif_bytes)
+        structure = call_module("cif_input", "load_cif", str(cif_path))
+        graph = call_module("preprocessing", "prepare_model_input", structure, str(checkpoint))
+        table = call_module(
+            "model", "predict_adsorption", graph, mof_id, pressures, gases, str(checkpoint)
         )
-    if st.session_state.get("structure") is None:
-        st.info("예측을 시작하려면 CIF 파일을 먼저 업로드해 주세요.")
-    if submitted:
-        if not gases or end <= start:
-            st.warning("기체를 하나 이상 선택하고 종료 압력을 시작 압력보다 크게 설정해 주세요.")
-        else:
+        required = ["mof_id", "gas", "pressure", "adsorption"]
+        if not isinstance(table, pd.DataFrame) or not set(required).issubset(table.columns):
+            raise ValueError("모델 결과에 mof_id, gas, pressure, adsorption 컬럼이 필요합니다.")
+        table = table[required].copy()
+        if len(table) != len(pressures) * len(gases):
+            raise ValueError("예측 결과 개수가 요청한 기체·압력 조합과 다릅니다.")
+        if not all(math.isfinite(float(value)) for value in table["adsorption"]):
+            raise ValueError("예측 결과에 유효하지 않은 흡착량이 있습니다.")
+        result = {
+            "name": name,
+            "mof_id": mof_id,
+            "table": table,
+            "structure_image": None,
+            "structure_data": structure.as_dict(),
+            "input_warnings": [],
+            "graph_info": {
+                "formula": graph["formula"],
+                "n_atoms": graph["n_atoms"],
+                "lattice_lengths_A": tuple(round(v, 4) for v in structure.lattice.abc),
+                "lattice_angles_deg": tuple(round(v, 4) for v in structure.lattice.angles),
+                "cell_volume_A3": round(structure.volume, 4),
+                "atom_features": str(tuple(graph["atom"].shape)),
+                "neighbor_features": str(tuple(graph["nbr"].shape)),
+                "checkpoint": checkpoint.name,
+            },
+        }
+        try:
+            image_path = call_module(
+                "cif_vis", "visualize_structure", structure, str(work / "structure.png")
+            )
+            result["structure_image"] = Path(image_path).read_bytes()
+        except Exception as exc:
+            LOGGER.exception("Structure visualization failed")
+            result["input_warnings"].append(f"결정구조 이미지 생성 실패 — {exc}")
+    result["outputs"] = build_outputs(result)
+    return result
+
+
+def show_prediction(result: dict):
+    st.subheader(f"최근 예측 결과 · {result['name']}")
+    left, right = st.columns([1, 2])
+    with left:
+        st.metric("원자 수", result["graph_info"]["n_atoms"])
+        st.write(result["graph_info"]["formula"])
+        if "structure_data" in result:
+            styles = {
+                "Ball & Stick": "ball_and_stick",
+                "Space-filling Sphere": "space_filling",
+                "Atoms only": "atoms_only",
+            }
+            selected_style = st.selectbox("결정구조 표시 스타일", list(styles))
             try:
-                from utils.preprocessing import prepare_model_input
-                from utils.model import predict_adsorption
+                from pymatgen.core import Structure
 
-                pressures = [start + (end - start) * i / (count - 1) for i in range(count)]
-                with st.spinner("구조를 그래프로 변환하고 흡착량을 계산하고 있습니다…"):
-                    graph = prepare_model_input(st.session_state["structure"], CHECKPOINT)
-                    results = predict_adsorption(
-                        graph, st.session_state["mof_id"], pressures, gases, CHECKPOINT
-                    )
-                st.session_state["results"] = results
-                st.session_state.pop("adsorption_image", None)
-            except Exception as error:
-                show_error(error)
-
-    results = st.session_state.get("results")
-    if results is None:
-        st.caption("계산 완료 후 예측 결과 표, 흡착 등온선과 CSV 다운로드가 표시됩니다.")
-        return
-    st.dataframe(results, use_container_width=True, hide_index=True)
-    st.download_button("예측 결과 CSV 다운로드", results.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="adsorption_results.csv", mime="text/csv")
-    if st.button("흡착량 그래프 생성", use_container_width=True):
-        st.session_state.pop("adsorption_image", None)
-        try:
-            from utils.plotting import plot_adsorption
-
-            with st.spinner("흡착량 그래프를 생성하고 있습니다…"):
-                path = Path(st.session_state["workdir"].name) / "adsorption.png"
-                image_path = plot_adsorption(
-                    results, path, db_results=st.session_state.get("db_results")
+                structure = Structure.from_dict(result["structure_data"])
+                figure = call_module(
+                    "cif_vis", "create_interactive_structure",
+                    structure, style=styles[selected_style],
                 )
-                st.session_state["adsorption_image"] = Path(image_path).read_bytes()
-        except Exception as error:
-            show_error(error)
-    if st.session_state.get("adsorption_image"):
-        st.image(st.session_state["adsorption_image"], use_container_width=True)
-        st.download_button(
-            "흡착량 그래프 PNG 다운로드", st.session_state["adsorption_image"],
-            file_name=f"{st.session_state['mof_id']}_adsorption.png", mime="image/png",
+                st.plotly_chart(
+                    figure, width="stretch",
+                    config={
+                        "displaylogo": False,
+                        "scrollZoom": True,
+                        "modeBarButtonsToRemove": ["select3d", "lasso3d"],
+                    },
+                )
+                st.caption("드래그로 회전하고 마우스 휠로 확대·축소할 수 있습니다.")
+            except Exception as exc:
+                LOGGER.exception("Interactive structure rendering failed")
+                st.warning(f"결정구조 3D 표시 실패 — {exc}")
+        if result["structure_image"] is not None:
+            with st.expander("정적 PNG 미리보기"):
+                st.image(result["structure_image"], caption="단위격자와 원자 배치")
+    with right:
+        st.dataframe(result["table"], hide_index=True, width="stretch")
+        if result["outputs"]["plot"] is not None:
+            st.image(result["outputs"]["plot"], caption="압력별 흡착량")
+    with st.expander("구조 및 그래프 정보"):
+        st.json(result["graph_info"])
+
+    database = st.session_state.get("db_result")
+    compare = st.checkbox(
+        "최근 DB 검색 결과를 그래프·보고서에 포함",
+        value=False,
+        disabled=database is None or database.empty,
+        key="compare_database",
+    )
+    if compare:
+        st.caption("DB 검색에서 온도 조건을 하나로 맞추고 예측과 동일한 단위를 사용하세요.")
+    if st.button("PDF 보고서 생성", help="현재 예측 결과와 선택한 DB 비교 결과로 그래프와 PDF를 생성합니다."):
+        with st.spinner("결과 파일 생성 중"):
+            result["outputs"] = build_outputs(result, database if compare else None)
+        st.rerun()
+    output = result["outputs"]
+    if output["comparison"]:
+        st.caption("현재 결과 파일에는 생성 당시의 DB 검색 결과가 포함되어 있습니다.")
+    for message in output["warnings"]:
+        st.warning(message)
+    name = result["mof_id"]
+    csv_col, pdf_col, plot_col, structure_col = st.columns(4)
+    csv_col.download_button(
+        "CSV 다운로드", output["csv"], f"{name}_adsorption.csv", "text/csv"
+    )
+    if output["pdf"] is not None:
+        st.success("PDF 보고서가 준비되었습니다. 아래 PDF 다운로드 버튼으로 저장하세요.")
+        pdf_col.download_button(
+            "PDF 다운로드", output["pdf"], f"{name}_report.pdf", "application/pdf"
+        )
+    if output["plot"] is not None:
+        plot_col.download_button(
+            "그래프 PNG", output["plot"], f"{name}_adsorption.png", "image/png"
+        )
+    if result["structure_image"] is not None:
+        structure_col.download_button(
+            "결정구조 PNG", result["structure_image"], f"{name}_structure.png", "image/png"
         )
 
 
-def render_database() -> None:
-    st.subheader("MOF 데이터베이스 탐색")
-    st.caption("검색 결과를 예측 결과와 비교할 수 있습니다. 검색 조건은 DB 모듈의 규격 확정 후 확장합니다.")
-    with st.form("database_form"):
-        st.write("전체 MOF 조회")
-        selectivity = st.checkbox("CO₂ / N₂ 선택도 계산", value=False)
-        submitted = st.form_submit_button("데이터베이스 검색", use_container_width=True)
+def prediction_page(checkpoint: Path):
+    with st.form("prediction_form"):
+        upload = st.file_uploader("MOF 결정구조 파일", type=["cif"])
+        samples = sorted((ROOT / "data" / "cif").glob("*.cif"))
+        sample_name = st.selectbox(
+            "또는 샘플 CIF 선택", ["선택 안 함"] + [path.name for path in samples]
+        )
+        pressure_text = st.text_input(
+            "압력 목록", value="0.01, 0.1, 0.5, 1, 5, 10",
+            help="쉼표 또는 공백으로 구분하세요. 모델 학습 데이터와 동일한 압력 단위를 사용합니다.",
+        )
+        gases = st.multiselect("기체", ["CO2", "N2"], default=["CO2", "N2"])
+        submitted = st.form_submit_button("흡착량 예측", type="primary")
+    st.caption("흡착량은 모델이 역정규화한 값입니다. 압력과 흡착량 단위는 학습 데이터 기준입니다.")
+
     if submitted:
+        st.session_state.pop("prediction_result", None)
         try:
-            if not DATABASE.is_file():
-                raise FileNotFoundError("MOF 데이터베이스 파일을 찾을 수 없습니다.")
-            with DATABASE.open("rb") as source:
-                is_pointer = source.read(80).startswith(b"version https://git-lfs.github.com/spec/")
-            if is_pointer:
-                st.warning("현재 DB 파일은 Git LFS 포인터입니다. 실제 Parquet 데이터를 받은 뒤 검색할 수 있습니다.")
+            pressures = parse_pressures(pressure_text)
+            if not gases:
+                raise ValueError("기체를 하나 이상 선택하세요.")
+            if upload is not None:
+                content, name = upload.getvalue(), upload.name
+            elif sample_name != "선택 안 함":
+                content, name = (ROOT / "data" / "cif" / sample_name).read_bytes(), sample_name
             else:
-                from utils.db_search import search_database
-
-                with st.spinner("데이터베이스를 검색하고 있습니다…"):
-                    st.session_state["db_results"] = search_database(
-                        DATABASE, filters={}, calculate_selectivity=selectivity
-                    )
-                st.session_state.pop("adsorption_image", None)
-        except Exception as error:
-            show_error(error)
-    results = st.session_state.get("db_results")
-    if results is not None:
-        st.caption(f"검색 결과 {len(results):,}건")
-        st.dataframe(results, use_container_width=True, hide_index=True)
-        st.download_button("검색 결과 CSV 다운로드", results.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="mof_database_results.csv", mime="text/csv")
-    else:
-        st.info("검색 결과가 이곳에 표시됩니다.")
+                raise ValueError("CIF 파일을 업로드하거나 샘플을 선택하세요.")
+            if not content:
+                raise ValueError("빈 CIF 파일입니다.")
+            with st.spinner("구조 분석 및 흡착량 예측 중"):
+                st.session_state["prediction_result"] = run_prediction(
+                    content, name, pressures, gases, checkpoint
+                )
+        except Exception as exc:
+            LOGGER.exception("Prediction failed")
+            st.error(f"예측을 완료하지 못했습니다. {exc}")
+    result = st.session_state.get("prediction_result")
+    if result is not None:
+        show_prediction(result)
 
 
-def main() -> None:
-    st.set_page_config(page_title="MOF Adsorption Lab", page_icon="🧪", layout="wide")
-    st.markdown("""
-        <style>
-        /* Keep the page readable even when Streamlit uses a dark system theme. */
-        .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-            background: #f6f7fa; color: #303440; color-scheme: light;
-            --text-color: #303440;
-            --background-color: #f6f7fa;
-            --secondary-background-color: #eef1f9;
-            --primary-color: #7c9cf5;
-        }
-        .block-container { max-width: 1250px; padding-top: 2.5rem; padding-bottom: 3rem; }
-        [data-testid="stSidebar"] {
-            background: #eef1f9; border-right: 1px solid #dfe5f1;
-        }
-        [data-testid="stMarkdownContainer"],
-        [data-testid="stMarkdownContainer"] p,
-        [data-testid="stMarkdownContainer"] li,
-        [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
-        [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
-        [data-testid="stExpander"] summary {
-            color: #303440 !important;
-        }
-        h1, h2, h3 { color: #202430 !important; letter-spacing: -0.025em; }
-        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {
-            color: #5e6575 !important;
-        }
-        [data-testid="stMetric"], [data-testid="stForm"],
-        [data-testid="stExpander"] {
-            background: #ffffff; border: 1px solid #dfe5f1;
-            border-radius: 6px; padding: 16px;
-        }
-        [data-baseweb="input"], [data-baseweb="input"] input,
-        [data-baseweb="select"] > div, [data-baseweb="textarea"],
-        [data-baseweb="textarea"] textarea, [data-baseweb="popover"],
-        [data-baseweb="menu"], [role="listbox"], [role="option"] {
-            background: #ffffff !important; color: #303440 !important;
-            -webkit-text-fill-color: #303440;
-        }
-        [data-baseweb="input"], [data-baseweb="select"] > div {
-            border-color: #b7c5e3 !important;
-        }
-        input::placeholder, textarea::placeholder {
-            color: #697184 !important; -webkit-text-fill-color: #697184;
-        }
-        [data-baseweb="tag"] { background: #eaf0fd !important; color: #3f5fa8 !important; }
-        [data-baseweb="tag"] span { color: #3f5fa8 !important; }
-        [data-testid="stFileUploaderDropzone"] {
-            background: #ffffff; border: 2px dashed #b7c5e3; border-radius: 12px;
-            color: #303440;
-        }
-        [data-testid="stFileUploaderDropzone"] small { color: #5e6575 !important; }
-        button[kind="secondary"], button[kind="secondaryFormSubmit"] {
-            background: #ffffff !important; color: #3f5fa8 !important;
-            border: 1px solid #b7c5e3 !important; border-radius: 8px;
-        }
-        button[kind="primary"], button[kind="primaryFormSubmit"] {
-            background: #7c9cf5 !important; color: #ffffff !important;
-            border: 1px solid #7c9cf5 !important; border-radius: 8px;
-        }
-        button[kind="primary"] p, button[kind="primaryFormSubmit"] p {
-            color: #ffffff !important;
-        }
-        button[kind="secondary"] p, button[kind="secondaryFormSubmit"] p {
-            color: #3f5fa8 !important;
-        }
-        button:disabled { opacity: 0.55 !important; cursor: not-allowed; }
-        button:focus-visible, input:focus-visible, summary:focus-visible {
-            outline: 3px solid #7c9cf5 !important; outline-offset: 3px;
-        }
-        [data-baseweb="tab-list"] { gap: 12px; border-bottom: 1px solid #dfe5f1; }
-        [data-baseweb="tab"] {
-            background: transparent; color: #5e6575 !important;
-            padding: 12px 20px; font-weight: 600;
-        }
-        [data-baseweb="tab"][aria-selected="true"] {
-            background: #eaf0fd; color: #3f5fa8 !important; border-radius: 8px 8px 0 0;
-        }
-        [data-baseweb="tab-highlight"] { background: #7c9cf5; }
-        [data-testid="stAlert"] {
-            background: #edf2fc; border: 1px solid #d5dff5; color: #3f5fa8;
-        }
-        [data-testid="stCode"], [data-testid="stCode"] pre,
-        [data-testid="stCode"] code {
-            background: #f0f3fa !important; color: #303440 !important;
-        }
-        hr { border-color: #dfe5f1 !important; }
-        /* Dashboard palette: periwinkle header, white panels, pale blue metrics. */
-        [data-testid="stMain"] h1 {
-            background: #7c9cf5; color: #ffffff !important;
-            padding: 20px 24px; border-radius: 6px;
-        }
-        [data-testid="stSidebar"] h1 { color: #3f5fa8 !important; }
-        [data-testid="stMetric"] { background: #eaf0fb; }
-        [data-testid="stMetricValue"] { color: #496bc5 !important; }
-        button[kind="primary"], button[kind="primaryFormSubmit"] {
-            background: #eaf0fd !important; color: #3f5fa8 !important;
-            border-color: #b7c5e3 !important;
-        }
-        button[kind="primary"] p, button[kind="primaryFormSubmit"] p {
-            color: #3f5fa8 !important;
-        }
-        button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover {
-            background: #dce6fc !important; border-color: #7c9cf5 !important;
-        }
-        [data-baseweb="tab"][aria-selected="true"] p { color: #3f5fa8 !important; }
-        [data-testid="stSuccess"] {
-            background: #ebf7f1; border-color: #8ed9b8; color: #27654c;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-    if "workdir" not in st.session_state:
-        st.session_state["workdir"] = TemporaryDirectory(prefix="mof-app-")
+def database_page(db_path: Path):
+    if not db_path.is_file():
+        st.info("DB 파일이 없습니다. 사이드바에서 실제 데이터 파일 경로를 지정하세요.")
+        return
+    with db_path.open("rb") as file:
+        is_pointer = file.read(64).startswith(b"version https://git-lfs.github.com/spec")
+    if is_pointer:
+        st.warning("현재 DB는 Git LFS 포인터입니다. 실제 데이터를 받은 뒤 검색할 수 있습니다.")
+        st.code("git lfs install\ngit lfs pull", language="shell")
+        return
 
+    with st.form("database_form"):
+        filters_text = st.text_area(
+            "검색 조건 (JSON)", value="{}",
+            help='예시: {"mof_id": "hMOF-0"} 또는 {"pressure": {"gte": 0.1, "lte": 10}}',
+        )
+        sort_by = st.text_input("정렬 컬럼 (선택)")
+        ascending = st.checkbox("오름차순", value=True)
+        selectivity = st.checkbox("CO₂/N₂ 흡착량 비율 계산")
+        submitted = st.form_submit_button("DB 검색")
+    if submitted:
+        st.session_state.pop("db_result", None)
+        try:
+            filters = json.loads(filters_text)
+            if not isinstance(filters, dict):
+                raise ValueError("검색 조건은 JSON 객체여야 합니다.")
+            with st.spinner("DB 검색 중"):
+                results = call_module(
+                    "db_search", "search_database", str(db_path), filters,
+                    sort_by=sort_by.strip() or None, ascending=ascending,
+                    calculate_selectivity=selectivity,
+                )
+            st.session_state["db_result"] = results
+            st.session_state["db_result_path"] = str(db_path)
+        except Exception as exc:
+            LOGGER.exception("Database search failed")
+            st.error(f"DB 검색 실패 — {exc}")
+    results = st.session_state.get("db_result")
+    if results is not None and st.session_state.get("db_result_path") == str(db_path):
+        st.write(f"최근 검색 결과 {len(results):,}건")
+        st.dataframe(results, hide_index=True, width="stretch")
+        st.download_button(
+            "검색 결과 CSV", results.to_csv(index=False).encode("utf-8-sig"),
+            "database_results.csv", "text/csv",
+        )
+        st.caption("예측 탭에서 이 검색 결과를 비교 그래프와 보고서에 포함할 수 있습니다.")
+
+
+def main():
+    st.set_page_config(page_title="MOF 흡착량 예측", page_icon="🧪", layout="wide")
+    st.title("MOF 흡착량 예측")
     with st.sidebar:
-        st.title("🧪 MOF Lab")
-        st.caption("결정구조에서 흡착 성능까지")
-        st.divider()
-        uploaded = st.file_uploader("MOF 결정구조 업로드", type=["cif"],
-                                    help="결정구조가 저장된 .cif 파일을 선택하세요.")
-        if uploaded is not None:
-            contents = uploaded.getvalue()
-            token = sha256(contents).hexdigest() + uploaded.name
-            if token != st.session_state.get("upload_token"):
-                for key in ("structure", "structure_image", "results", "adsorption_image",
-                            "cif_bytes", "mof_id", "upload_error",
-                            "structure_image_attempted", "structure_image_error"):
-                    st.session_state.pop(key, None)
-                st.session_state["upload_token"] = token
-                try:
-                    from utils.cif_input import load_cif
-
-                    path = Path(st.session_state["workdir"].name) / "input.cif"
-                    path.write_bytes(contents)
-                    st.session_state["structure"] = load_cif(path)
-                    st.session_state["cif_bytes"] = contents
-                    st.session_state["mof_id"] = Path(uploaded.name).stem
-                except Exception as error:
-                    st.session_state["upload_error"] = error
-            if st.session_state.get("upload_error") is not None:
-                show_error(st.session_state["upload_error"])
-            elif st.session_state.get("structure") is not None:
-                st.success(f"{uploaded.name} 로딩 완료")
-        else:
-            for key in ("upload_token", "structure", "structure_image", "results",
-                        "adsorption_image", "cif_bytes", "mof_id", "upload_error",
-                        "structure_image_attempted", "structure_image_error"):
-                st.session_state.pop(key, None)
-        st.divider()
-        st.caption("사용 순서")
-        st.markdown("1. CIF 파일 업로드\n2. 결정구조 확인\n3. 조건 설정 및 흡착량 계산\n4. DB 비교 및 결과 다운로드")
-        st.caption("페이지 시안 · 계산 및 시각화 기능은 팀 모듈 구현 후 사용 가능합니다.")
-
-    st.title("MOF Adsorption Lab")
-    st.write("MOF 결정구조를 살펴보고, 기체 흡착 성능을 예측하고 비교하세요.")
-    st.caption("CIF 기반 구조 분석 · CGCNN 기반 CO₂ / N₂ 예측")
-    structure_tab, prediction_tab, database_tab = st.tabs(
-        ["결정구조", "흡착량 예측", "데이터베이스"]
-    )
-    with structure_tab:
-        st.subheader("결정구조 미리보기")
-        render_structure()
-    with prediction_tab:
-        render_prediction()
+        st.header("데이터 설정")
+        checkpoints = sorted((ROOT / "models").glob("*.pt"))
+        default_checkpoint = str(checkpoints[0].relative_to(ROOT)) if checkpoints else "models/cgcnn_scratch_model.pt"
+        checkpoint_text = st.text_input("모델 체크포인트", value=default_checkpoint)
+        db_text = st.text_input("MOF DB 경로", value="data/mof_cif.parquet")
+        st.caption("상대 경로는 프로젝트 폴더 기준입니다.")
+        missing = [
+            name for name in ("torch", "pymatgen", "matplotlib", "pyarrow")
+            if util.find_spec(name) is None
+        ]
+        if missing:
+            st.warning("필요 패키지 설치 필요 · " + ", ".join(missing))
+            st.code("python -m pip install -r requirements.txt", language="shell")
+    if st.session_state.get("active_db_path") != str(resolve_path(db_text)):
+        st.session_state.pop("db_result", None)
+        st.session_state.pop("db_result_path", None)
+        st.session_state["active_db_path"] = str(resolve_path(db_text))
+    prediction_tab, database_tab = st.tabs(["흡착량 예측", "MOF DB 검색"])
     with database_tab:
-        render_database()
+        try:
+            database_page(resolve_path(db_text))
+        except OSError as exc:
+            st.error(f"DB 경로를 확인하세요. {exc}")
+    with prediction_tab:
+        prediction_page(resolve_path(checkpoint_text))
 
 
 if __name__ == "__main__":
